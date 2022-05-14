@@ -114,7 +114,13 @@ impl WalletProtocol for WalletService {
         self.check_worker().await?;
         self.check_fvk(request.get_ref().fvk_hash.as_ref()).await?;
 
-        todo!()
+        let notes = self
+            .storage
+            .notes()
+            .await
+            .map_err(|_| tonic::Status::unavailable("database error"))?;
+
+        Ok(tonic::Response::new(todo!()))
     }
 
     async fn auth_paths(

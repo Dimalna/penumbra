@@ -1,13 +1,17 @@
 use std::path::PathBuf;
 
 use anyhow::anyhow;
+
 use penumbra_chain::params::ChainParams;
 use penumbra_crypto::{
+    asset,
+    ka::Public,
+    keys::{Diversifier, DiversifierIndex},
     merkle::{NoteCommitmentTree, Tree},
     note::Commitment,
-    FieldExt, FullViewingKey,
+    FieldExt, Fq, FullViewingKey, Note, Nullifier, Value,
 };
-use penumbra_proto::Protobuf;
+use penumbra_proto::{wallet::NoteRecord, Protobuf};
 use sqlx::{migrate::MigrateDatabase, query, Pool, Sqlite};
 
 use crate::sync::ScanResult;
@@ -130,6 +134,69 @@ impl Storage {
         .await?;
 
         Ok(bincode::deserialize(result.bytes.as_slice())?)
+    }
+
+    pub async fn notes(
+        &self,
+        // include_spent: bool,
+        // asset_id: Option<i64>,
+        // diversifier_index: Option<DiversifierIndex>,
+        // amount_to_spend: Option<i64>,
+    ) -> anyhow::Result<Vec<NoteRecord>> {
+        // // If set, return spent notes as well as unspent notes.
+        // bool include_spent = 2;
+
+        // // If set, only return notes with the specified asset id.
+        // crypto.AssetId asset_id = 3;
+
+        // // If set, only return notes with the specified diversifier index.
+        // crypto.DiversifierIndex diversifier_index = 4;
+
+        // // If set, stop returning notes once the total exceeds this amount.
+        // //
+        // // Ignored if `asset_id` is unset or if `include_spent` is set.
+        // uint64 amount_to_spend = 5;
+
+        let result = query!(
+            r#"
+            SELECT *
+            FROM notes
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut output: Vec<NoteRecord> = Vec::new();
+
+        for record in result {
+            let diversifier = Diversifier::try_from(&record.diversifier[..])?;
+            let transmission_key = Public(record.transmission_key[..].try_into()?);
+            let value = Value {
+                amount: record.amount as u64,
+                asset_id: asset::Id(Fq::from_bytes(record.asset_id[..].try_into()?)?),
+            };
+            let note_blinding = Fq::from_bytes(record.blinding_factor[..].try_into()?)?;
+
+            output.push(NoteRecord {
+                note_commitment: Some(Commitment::try_from(&record.note_commitment[..])?.into()),
+                note: Some(
+                    Note::from_parts(diversifier, transmission_key, value, note_blinding)?.into(),
+                ),
+
+                diversifier_index: Some(
+                    DiversifierIndex(record.diversifier_index[..].try_into()?).into(),
+                ),
+                nullifier: Some(Nullifier::try_from(record.nullifier)?.into()),
+                height_created: record.height_created as u64,
+                height_spent: if record.height_spent == None {
+                    None
+                } else {
+                    Some(record.height_spent.unwrap() as u64)
+                }, //height_spent is nullable
+            })
+        }
+
+        Ok(output)
     }
 
     pub async fn record_block(
